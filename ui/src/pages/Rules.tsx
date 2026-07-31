@@ -112,6 +112,136 @@ function ConditionEditor({
   );
 }
 
+/** What the editor form holds. A subset of `Rule`: the server owns id, version, and time. */
+interface RuleDraft {
+  name: string;
+  action: "drop" | "forward";
+  order: number;
+  shadow: boolean;
+  retain_payload: boolean;
+  conditions: Condition[];
+}
+
+function RuleForm({
+  title,
+  initial,
+  submitLabel,
+  busy,
+  showOrder,
+  onSubmit,
+  onCancel,
+}: {
+  title: string;
+  initial: RuleDraft;
+  submitLabel: string;
+  busy: boolean;
+  showOrder: boolean;
+  onSubmit: (draft: RuleDraft) => void;
+  onCancel: () => void;
+}) {
+  const [draft, setDraft] = useState<RuleDraft>(initial);
+  const set = <K extends keyof RuleDraft>(key: K, value: RuleDraft[K]) =>
+    setDraft((prev) => ({ ...prev, [key]: value }));
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>{title}</h3>
+      <div className="row" style={{ marginBottom: 10 }}>
+        <input
+          placeholder="Rule name"
+          value={draft.name}
+          onChange={(e) => set("name", e.target.value)}
+          style={{ minWidth: 260 }}
+        />
+        <select
+          value={draft.action}
+          onChange={(e) => {
+            const action = e.target.value as "drop" | "forward";
+            // retain_payload only applies to drop rules, and the server rejects the pair
+            // outright. Clear it here so the form cannot submit a combination that is
+            // guaranteed to 422.
+            setDraft((prev) => ({
+              ...prev,
+              action,
+              retain_payload: action === "drop" ? prev.retain_payload : false,
+            }));
+          }}
+        >
+          <option value="drop">drop</option>
+          <option value="forward">forward</option>
+        </select>
+        {showOrder && (
+          <label className="muted" title="Lower runs first. The first match decides the event">
+            Order{" "}
+            <input
+              type="number"
+              min={0}
+              value={draft.order}
+              onChange={(e) => set("order", Math.max(0, Number(e.target.value) || 0))}
+              style={{ width: 70 }}
+            />
+          </label>
+        )}
+        <label className="muted">
+          <input
+            type="checkbox"
+            checked={draft.shadow}
+            onChange={(e) => set("shadow", e.target.checked)}
+          />{" "}
+          Shadow mode
+        </label>
+        {draft.action === "drop" && (
+          <label className="muted" title="Keep the whole event in the drop audit record (D-02)">
+            <input
+              type="checkbox"
+              checked={draft.retain_payload}
+              onChange={(e) => set("retain_payload", e.target.checked)}
+            />{" "}
+            Retain payload
+          </label>
+        )}
+      </div>
+
+      {draft.conditions.map((c, index) => (
+        <ConditionEditor
+          key={index}
+          condition={c}
+          onChange={(next) =>
+            set(
+              "conditions",
+              draft.conditions.map((p, i) => (i === index ? next : p)),
+            )
+          }
+          onRemove={() =>
+            set(
+              "conditions",
+              draft.conditions.filter((_, i) => i !== index),
+            )
+          }
+        />
+      ))}
+
+      <div className="row">
+        <button onClick={() => set("conditions", [...draft.conditions, emptyCondition()])}>
+          Add condition
+        </button>
+        <span className="muted">All conditions must match</span>
+        <span className="spacer" />
+        <button onClick={onCancel}>Cancel</button>
+        <button
+          className="primary"
+          onClick={() => onSubmit(draft)}
+          // A rule with no conditions matches everything, and the server rejects it. Say
+          // so by disabling the button rather than by round-tripping a 422.
+          disabled={busy || !draft.name || draft.conditions.length === 0}
+        >
+          {submitLabel}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function Rules({
   canEdit,
   onChanged,
@@ -122,10 +252,7 @@ export default function Rules({
   const [rules, setRules] = useState<Rule[]>([]);
   const [error, setError] = useState("");
   const [creating, setCreating] = useState(false);
-  const [name, setName] = useState("");
-  const [action, setAction] = useState<"drop" | "forward">("drop");
-  const [shadow, setShadow] = useState(true);
-  const [conditions, setConditions] = useState<Condition[]>([emptyCondition()]);
+  const [editing, setEditing] = useState<Rule | null>(null);
   const [sim, setSim] = useState<SimulationResult | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -141,27 +268,44 @@ export default function Rules({
     void load();
   }, [load]);
 
-  async function create() {
+  /** Run a mutation, then reload and tell the shell the chain is out of date.
+   *
+   * Every change here makes the published bundle stale, so `onChanged` is not optional:
+   * without it the header keeps claiming the running config matches the rules on screen.
+   */
+  async function mutate(what: string, fn: () => Promise<unknown>) {
     setBusy(true);
     setError("");
     try {
-      await api.createRule({
-        name,
-        action,
-        order: rules.length,
-        conditions,
-        shadow,
-      });
-      setName("");
-      setConditions([emptyCondition()]);
-      setCreating(false);
+      await fn();
       await load();
       onChanged();
+      return true;
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : "Could not create the rule");
+      setError(err instanceof ApiError ? err.message : `Could not ${what}`);
+      return false;
     } finally {
       setBusy(false);
     }
+  }
+
+  async function create(draft: RuleDraft) {
+    const ok = await mutate("create the rule", () =>
+      api.createRule({
+        name: draft.name,
+        action: draft.action,
+        order: draft.order,
+        conditions: draft.conditions,
+        shadow: draft.shadow,
+        retain_payload: draft.retain_payload,
+      }),
+    );
+    if (ok) setCreating(false);
+  }
+
+  async function save(rule: Rule, draft: RuleDraft) {
+    const ok = await mutate("save the rule", () => api.updateRule(rule.id, draft));
+    if (ok) setEditing(null);
   }
 
   async function runSimulation() {
@@ -201,7 +345,13 @@ export default function Rules({
             Preview impact
           </button>
           {canEdit && (
-            <button className="primary" onClick={() => setCreating((v) => !v)}>
+            <button
+              className="primary"
+              onClick={() => {
+                setEditing(null);
+                setCreating((v) => !v);
+              }}
+            >
               {creating ? "Cancel" : "New rule"}
             </button>
           )}
@@ -251,51 +401,46 @@ export default function Rules({
       )}
 
       {creating && (
-        <div className="card">
-          <h3 style={{ marginTop: 0 }}>New rule</h3>
-          <div className="row" style={{ marginBottom: 10 }}>
-            <input
-              placeholder="Rule name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              style={{ minWidth: 260 }}
-            />
-            <select value={action} onChange={(e) => setAction(e.target.value as "drop" | "forward")}>
-              <option value="drop">drop</option>
-              <option value="forward">forward</option>
-            </select>
-            <label className="muted">
-              <input
-                type="checkbox"
-                checked={shadow}
-                onChange={(e) => setShadow(e.target.checked)}
-              />{" "}
-              Start in shadow mode
-            </label>
-          </div>
+        <RuleForm
+          title="New rule"
+          submitLabel="Create"
+          busy={busy}
+          showOrder={false}
+          initial={{
+            name: "",
+            action: "drop",
+            order: rules.length,
+            // New rules start shadowed on purpose: a rule that starts dropping the moment
+            // it is published has no chance to be checked against real traffic first.
+            shadow: true,
+            retain_payload: false,
+            conditions: [emptyCondition()],
+          }}
+          onSubmit={(draft) => void create(draft)}
+          onCancel={() => setCreating(false)}
+        />
+      )}
 
-          {conditions.map((c, index) => (
-            <ConditionEditor
-              key={index}
-              condition={c}
-              onChange={(next) =>
-                setConditions((prev) => prev.map((p, i) => (i === index ? next : p)))
-              }
-              onRemove={() => setConditions((prev) => prev.filter((_, i) => i !== index))}
-            />
-          ))}
-
-          <div className="row">
-            <button onClick={() => setConditions((prev) => [...prev, emptyCondition()])}>
-              Add condition
-            </button>
-            <span className="muted">All conditions must match</span>
-            <span className="spacer" />
-            <button className="primary" onClick={() => void create()} disabled={busy || !name}>
-              Create
-            </button>
-          </div>
-        </div>
+      {editing && (
+        <RuleForm
+          // Remount on a different rule. Without the key, the form keeps the draft state
+          // of whichever rule was opened first.
+          key={editing.id}
+          title={`Edit ${editing.name}`}
+          submitLabel="Save"
+          busy={busy}
+          showOrder
+          initial={{
+            name: editing.name,
+            action: editing.action,
+            order: editing.order,
+            shadow: editing.shadow,
+            retain_payload: editing.retain_payload,
+            conditions: editing.conditions,
+          }}
+          onSubmit={(draft) => void save(editing, draft)}
+          onCancel={() => setEditing(null)}
+        />
       )}
 
       <div className="card">
@@ -338,17 +483,40 @@ export default function Rules({
                   {rule.retain_payload && <span className="pill">retains payload</span>}
                 </td>
                 <td>
-                  {canEdit && rule.enabled && (
-                    <button
-                      className="danger"
-                      onClick={async () => {
-                        await api.disableRule(rule.id);
-                        await load();
-                      }}
-                      title="Rules are disabled, never deleted"
-                    >
-                      Disable
-                    </button>
+                  {canEdit && (
+                    <div className="row" style={{ flexWrap: "nowrap", justifyContent: "flex-end" }}>
+                      <button
+                        onClick={() => {
+                          setCreating(false);
+                          setEditing(rule);
+                        }}
+                        disabled={busy}
+                      >
+                        Edit
+                      </button>
+                      {rule.enabled ? (
+                        <button
+                          className="danger"
+                          onClick={() => void mutate("disable the rule", () => api.disableRule(rule.id))}
+                          disabled={busy}
+                          title="Rules are disabled, never deleted (D-31)"
+                        >
+                          Disable
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() =>
+                            void mutate("enable the rule", () =>
+                              api.updateRule(rule.id, { enabled: true }),
+                            )
+                          }
+                          disabled={busy}
+                          title="Put this rule back into the chain"
+                        >
+                          Enable
+                        </button>
+                      )}
+                    </div>
                   )}
                 </td>
               </tr>
@@ -362,6 +530,15 @@ export default function Rules({
             )}
           </tbody>
         </table>
+        {/*
+          D-31. Worth stating on the page: an analyst who wants a rule gone looks for a
+          delete button, doesn't find one, and needs to know that disabling is the removal
+          path rather than a step on the way to one.
+        */}
+        <p className="muted">
+          Disabling takes a rule out of the chain. There is no delete: rules and their
+          history are kept so an old decision can still be explained.
+        </p>
       </div>
     </>
   );

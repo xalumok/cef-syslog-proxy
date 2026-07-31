@@ -157,7 +157,7 @@ jobs:
         # If an unfixable CVE does land in Alpine later, add a dated, per-CVE `.trivyignore`
         # entry with the reachability argument written out. Do not reach for
         # `ignore-unfixed` — a blanket flag hides the next one too.
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: sixthsense-control:${{ github.sha }}
           severity: HIGH,CRITICAL
@@ -168,7 +168,7 @@ jobs:
         # The node image sits in the data path and ships the Vector binary, so it gets the
         # same gate. Scanning only the control plane left the image that actually receives
         # events unscanned.
-        uses: aquasecurity/trivy-action@0.36.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: sixthsense-node:${{ github.sha }}
           severity: HIGH,CRITICAL
