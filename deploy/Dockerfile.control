@@ -1,0 +1,62 @@
+# Control plane: FastAPI plus the built React app.
+# Node.js appears in the build stage only. It never runs in production.
+
+ARG VECTOR_VERSION=0.51.0
+
+FROM node:22-alpine AS ui
+WORKDIR /ui
+COPY ui/package*.json ./
+RUN npm ci
+COPY ui/ ./
+RUN npm run build
+
+FROM timberio/vector:${VECTOR_VERSION}-debian AS vector
+
+FROM python:3.12-slim AS runtime
+
+# Non-root, read-only root filesystem, no shell tooling beyond what Python needs.
+RUN groupadd --gid 10001 sixthsense \
+ && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin sixthsense
+
+# The control plane compiles rules, so it needs Vector to validate what it compiled.
+#
+# D-44 requires the config to be compiled and run before activation, and that gate cannot
+# run without the binary. Without it, publishing either fails or silently degrades to no
+# validation, and an unloadable bundle reaches every node. The binary is a validation tool
+# here, not a data path: the control plane never receives an event.
+COPY --from=vector /usr/bin/vector /usr/local/bin/vector
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
+RUN pip install --no-cache-dir . && rm -rf /root/.cache
+
+COPY --from=ui /ui/dist ./ui/dist
+
+RUN mkdir -p /data && chown sixthsense:sixthsense /data
+VOLUME ["/data"]
+
+USER 10001:10001
+# Point at the built UI explicitly. The package installs into site-packages, so the path
+# arithmetic that finds ui/dist in a source checkout does not resolve here.
+#
+# SS_JWT_SECRET is deliberately not set. This image binds 0.0.0.0, and the control plane
+# refuses to start on a non-loopback interface while the signing key is the published
+# development default, so the container exits with that message until you supply one:
+#
+#   docker run -e SS_JWT_SECRET="$(openssl rand -hex 32)" ...
+#
+# Baking a default here would defeat the guard, and every deployment would share a key that
+# is readable in this repository.
+ENV SS_DATABASE_URL="sqlite+pysqlite:////data/sixthsense.db" \
+    SS_BIND_HOST="0.0.0.0" \
+    SS_BIND_PORT="8000" \
+    SS_UI_DIST="/app/ui/dist" \
+    PYTHONUNBUFFERED=1
+
+EXPOSE 8000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/api/health').status==200 else 1)"
+
+ENTRYPOINT ["ssctl"]
+CMD ["serve"]

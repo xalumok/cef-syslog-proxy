@@ -1,0 +1,67 @@
+# Local demo stack: control plane, one proxy node, and a fake ELK receiver.
+#
+#   docker compose up --build
+#   docker compose exec control ssctl adduser analyst --role rule-editor --password demo1234
+#   open http://localhost:8000
+#   docker compose exec node cefgen send 127.0.0.1:5514 -n 500 -r 100
+
+services:
+  control:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.control
+    environment:
+      SS_JWT_SECRET: "local-demo-secret-at-least-32-bytes!"
+      SS_VECTOR_LISTEN_ADDRESS: "0.0.0.0:5514"
+      SS_VECTOR_ELK_ADDRESS: "elk:5140"
+      SS_VECTOR_DROP_AUDIT_ADDRESS: "elk:5141"
+      SS_CONTROL_PLANE_URL: "http://control:8000"
+    ports:
+      - "8000:8000"
+    volumes:
+      - control-data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  node:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.node
+    depends_on:
+      - control
+      - elk
+    environment:
+      SS_CONTROL_PLANE_URL: "http://control:8000"
+      SS_LISTEN_ADDRESS: "0.0.0.0:5514"
+      SS_ELK_ADDRESS: "elk:5140"
+      SS_AGENT_INTERVAL: "10"
+    ports:
+      - "5514:5514/udp"
+      - "9598:9598"
+    security_opt:
+      - no-new-privileges:true
+
+  # Stands in for the real ELK receiver. Prints whatever the proxy forwards, so you can
+  # watch filtering work without running Elasticsearch locally.
+  elk:
+    image: python:3.12-slim
+    command:
+      - python
+      - -c
+      - |
+        import socket, threading
+        def listen(port, label):
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.bind(("0.0.0.0", port))
+            print(f"[{label}] listening on {port}", flush=True)
+            while True:
+                data, _ = s.recvfrom(65536)
+                print(f"[{label}] {data.decode('utf-8', 'replace')}", flush=True)
+        threading.Thread(target=listen, args=(5140, "forwarded"), daemon=True).start()
+        listen(5141, "drop-audit")
+
+volumes:
+  control-data:
