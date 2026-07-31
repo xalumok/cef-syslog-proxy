@@ -130,11 +130,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `--pull` on both builds. A cached python:3.12-slim is how a base layer with a
+      # published fix goes on shipping unnoticed, and the blocking scan below only helps if
+      # the layer it scans is the current one.
       - name: Build control plane image
-        run: docker build -f deploy/Dockerfile.control --build-arg VECTOR_VERSION=${VECTOR_VERSION} -t sixthsense-control:${{ github.sha }} .
+        run: docker build --pull -f deploy/Dockerfile.control --build-arg VECTOR_VERSION=${VECTOR_VERSION} -t sixthsense-control:${{ github.sha }} .
 
       - name: Build node image
-        run: docker build -f deploy/Dockerfile.node --build-arg VECTOR_VERSION=${VECTOR_VERSION} -t sixthsense-node:${{ github.sha }} .
+        run: docker build --pull -f deploy/Dockerfile.node --build-arg VECTOR_VERSION=${VECTOR_VERSION} -t sixthsense-node:${{ github.sha }} .
 
       - name: SBOM
         uses: anchore/sbom-action@v0
@@ -145,11 +148,31 @@ jobs:
           # dependencies misrepresents what actually ships.
           artifact-name: sbom-node.cdx.json
 
-      - name: Container scan
-        uses: aquasecurity/trivy-action@master
+      - name: Container scan, control plane
+        # No `ignore-unfixed`. Both images build on python:3.12-alpine, which scans with
+        # zero HIGH or CRITICAL findings, so a strict gate passes today and any finding at
+        # all is news. The 23 unfixable Debian CVEs that used to fail this step were dealt
+        # with by changing the base image, not by filtering the scanner.
+        #
+        # If an unfixable CVE does land in Alpine later, add a dated, per-CVE `.trivyignore`
+        # entry with the reachability argument written out. Do not reach for
+        # `ignore-unfixed` — a blanket flag hides the next one too.
+        uses: aquasecurity/trivy-action@0.36.0
         with:
           image-ref: sixthsense-control:${{ github.sha }}
           severity: HIGH,CRITICAL
+          scanners: vuln
+          exit-code: "1"
+
+      - name: Container scan, node
+        # The node image sits in the data path and ships the Vector binary, so it gets the
+        # same gate. Scanning only the control plane left the image that actually receives
+        # events unscanned.
+        uses: aquasecurity/trivy-action@0.36.0
+        with:
+          image-ref: sixthsense-node:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          scanners: vuln
           exit-code: "1"
 
       - name: Install cosign

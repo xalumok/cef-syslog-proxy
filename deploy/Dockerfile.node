@@ -6,14 +6,20 @@
 
 ARG VECTOR_VERSION=0.51.0
 
-FROM timberio/vector:${VECTOR_VERSION}-debian AS vector
+# Alpine on both stages, matching Dockerfile.control. The reasoning is written out there;
+# the constraint that matters here is that Vector comes from the -alpine tag, because the
+# -debian binary is glibc-linked and will not run on musl.
+#
+# This is a data-path binary, so the swap is a Vector change by the rule at the top of this
+# file: it goes through the full pipeline including the CEF conformance corpus.
+FROM timberio/vector:${VECTOR_VERSION}-alpine AS vector
 
-FROM python:3.12-slim AS runtime
+FROM python:3.12-alpine AS runtime
 
-RUN groupadd --gid 10001 sixthsense \
- && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin sixthsense
+RUN addgroup -g 10001 -S sixthsense \
+ && adduser -u 10001 -G sixthsense -S -H -s /sbin/nologin sixthsense
 
-COPY --from=vector /usr/bin/vector /usr/local/bin/vector
+COPY --from=vector /usr/local/bin/vector /usr/local/bin/vector
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

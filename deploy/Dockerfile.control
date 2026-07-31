@@ -10,13 +10,28 @@ RUN npm ci
 COPY ui/ ./
 RUN npm run build
 
-FROM timberio/vector:${VECTOR_VERSION}-debian AS vector
+# Alpine, not debian-slim, on both stages.
+#
+# python:3.12-slim carries 23 HIGH/CRITICAL CVEs that Debian trixie has published no fix
+# for — eight in perl-base alone, three of them marked fix_deferred. None are reachable
+# from anything we run: nothing here invokes perl, and the util-linux and ncurses findings
+# need a local caller we don't have. But unfixable findings can't be cleared by patching,
+# so the choice is a permanent suppression list or a base without them. python:3.12-alpine
+# scans clean, so there is nothing to suppress and the gate stays meaningful.
+#
+# musl is the tradeoff, and it constrains two things:
+#   - Vector must come from the -alpine tag. The -debian binary is glibc-linked and will
+#     not execute here.
+#   - Every wheel must publish musllinux. All of them do today, so the image needs no
+#     compiler. A dependency that ships only manylinux will fail this build rather than
+#     silently compile from source, which is the failure we want.
+FROM timberio/vector:${VECTOR_VERSION}-alpine AS vector
 
-FROM python:3.12-slim AS runtime
+FROM python:3.12-alpine AS runtime
 
 # Non-root, read-only root filesystem, no shell tooling beyond what Python needs.
-RUN groupadd --gid 10001 sixthsense \
- && useradd --uid 10001 --gid 10001 --no-create-home --shell /usr/sbin/nologin sixthsense
+RUN addgroup -g 10001 -S sixthsense \
+ && adduser -u 10001 -G sixthsense -S -H -s /sbin/nologin sixthsense
 
 # The control plane compiles rules, so it needs Vector to validate what it compiled.
 #
@@ -24,7 +39,7 @@ RUN groupadd --gid 10001 sixthsense \
 # run without the binary. Without it, publishing either fails or silently degrades to no
 # validation, and an unloadable bundle reaches every node. The binary is a validation tool
 # here, not a data path: the control plane never receives an event.
-COPY --from=vector /usr/bin/vector /usr/local/bin/vector
+COPY --from=vector /usr/local/bin/vector /usr/local/bin/vector
 
 WORKDIR /app
 COPY pyproject.toml README.md ./

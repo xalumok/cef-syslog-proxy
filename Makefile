@@ -99,7 +99,7 @@ try: ## Run the whole stack locally and send traffic through it
 	./scripts/demo.sh
 
 .PHONY: demo
-demo: ## Seed a database with example rules and a user
+demo: ## Seed a database with a user (no rules, no data plane; see 'make try')
 	rm -f demo.db
 	SS_DATABASE_URL="sqlite+pysqlite:///./demo.db" $(VENV)/bin/ssctl init-db
 	SS_DATABASE_URL="sqlite+pysqlite:///./demo.db" $(VENV)/bin/ssctl adduser analyst --role rule-editor --password demo1234

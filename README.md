@@ -233,29 +233,56 @@ Measure on your own hardware before you commit. Full tables are in
 
 ## Quick start
 
-```bash
-make setup                      # venv, Python dependencies, npm install
-make vector                     # download the pinned Vector binary into .tools/
-export PATH="$PWD/.tools:$PATH"
-
-make demo                       # seed a database with example rules and a user
-SS_DATABASE_URL="sqlite+pysqlite:///./demo.db" make dev
-```
-
-Open http://127.0.0.1:8000 and sign in as `analyst` / `demo1234`.
-
-Then send some events from another terminal:
-
-```bash
-.venv/bin/cefgen send 127.0.0.1:5514 -n 500 -r 100
-```
-
-Or run the whole stack, including a fake ELK receiver that prints what it receives:
+Docker is the shortest path. It runs the control plane, one proxy node, and a fake ELK receiver
+that prints whatever the proxy forwards.
 
 ```bash
 docker compose up --build
 docker compose exec control ssctl adduser analyst --role rule-editor --password demo1234
 ```
+
+Open http://localhost:8000 and sign in as `analyst` / `demo1234`. Create a rule, publish a bundle
+from the Bundles page, then send traffic through the node:
+
+```bash
+docker compose exec node cefgen send 127.0.0.1:5514 -n 500 -r 100
+```
+
+Watch the events land on the Live decisions page, and `docker compose logs -f elk` to see what
+reached ELK. The node starts in forward-everything mode and picks up your bundle within about ten
+seconds, so it's safe to send traffic before you've published anything.
+
+### Without Docker
+
+`make try` runs the same stack from your checkout, seeded with two example rules and a published
+bundle:
+
+```bash
+make setup
+make vector
+export PATH="$PWD/.tools:$PATH"
+make try
+```
+
+It recreates `demo.db` each time, so don't run it on top of rules you want to keep.
+
+### Control plane on its own
+
+For API or UI work, when you don't need events flowing:
+
+```bash
+make demo
+SS_DATABASE_URL="sqlite+pysqlite:///./demo.db" make dev
+```
+
+This gives you **no data plane**. Nothing binds `:5514`, so the live view stays empty, and
+`cefgen` won't tell you: it sends over UDP and reports success whether or not anything is
+listening. To process events you need Vector running against a published bundle, which is what
+`make try` sets up for you.
+
+One shell trap, since these blocks are meant to be pasted: zsh doesn't treat `#` as a comment by
+default, so copying a command together with a trailing `# explanation` makes the rest of the line
+into arguments and fails somewhere confusing.
 
 ## Commands
 

@@ -47,7 +47,7 @@ services:
   # Stands in for the real ELK receiver. Prints whatever the proxy forwards, so you can
   # watch filtering work without running Elasticsearch locally.
   elk:
-    image: python:3.12-slim
+    image: python:3.12-alpine
     command:
       - python
       - -c
