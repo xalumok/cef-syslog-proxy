@@ -36,6 +36,15 @@ jobs:
         # the cheapest defense against the injection surface in D-44.
         run: mypy --strict src/sixthsense/compiler
 
+      - name: Install Vector ${{ env.VECTOR_VERSION }}
+        # Publishing runs the validation gate, which shells out to `vector vrl`. Without the
+        # binary the bundle tests fail rather than skip, and skipping them would leave publish
+        # and rollback untested in CI: the dataplane job only runs the e2e module.
+        run: |
+          curl -sSfL "https://packages.timber.io/vector/${VECTOR_VERSION}/vector-${VECTOR_VERSION}-x86_64-unknown-linux-gnu.tar.gz" -o vector.tar.gz
+          tar xzf vector.tar.gz
+          echo "$PWD/vector-x86_64-unknown-linux-gnu/bin" >> "$GITHUB_PATH"
+
       - name: Unit and property tests
         run: pytest tests -q --ignore=tests/test_dataplane_e2e.py
 

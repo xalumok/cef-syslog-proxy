@@ -47,7 +47,7 @@ types: ## Type check, with --strict on the compiler
 	$(VENV)/bin/mypy --strict src/sixthsense/compiler
 
 .PHONY: test
-test: ## Unit and property tests (no Vector needed)
+test: ## Unit and property tests (the bundle tests need .tools/vector on PATH)
 	$(PY) -m pytest tests -q --ignore=tests/test_dataplane_e2e.py
 
 .PHONY: e2e

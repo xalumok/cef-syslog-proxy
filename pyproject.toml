@@ -69,6 +69,10 @@ strict = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# Put the repo root on sys.path so `from tests.conftest import ...` resolves under a bare
+# `pytest` as well as `python -m pytest`. Without this, CI fails collection while local
+# runs pass, because only the `-m` form adds the working directory itself.
+pythonpath = ["."]
 
 [tool.bandit]
 exclude_dirs = ["tests"]
